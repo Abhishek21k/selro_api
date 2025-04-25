@@ -1,9 +1,11 @@
 import os
 import requests
 import time
+import json
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Depends, Header, status
 from fastapi.security import APIKeyHeader
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -37,6 +39,36 @@ class SelroOrderResponse(BaseModel):
     orders: List[Dict[str, Any]]
     message: Optional[str] = None
     order: Optional[Dict[str, Any]] = None
+
+
+# Function to recursively clean JSON data by removing null values and empty objects/arrays
+def clean_json(data):
+    if isinstance(data, dict):
+        # Start with an empty result dictionary
+        result = {}
+
+        # Process each key-value pair in the dictionary
+        for key, value in data.items():
+            # Clean the value recursively
+            cleaned_value = clean_json(value)
+
+            # Only add non-null, non-empty values to the result
+            if (
+                cleaned_value is not None
+                and cleaned_value != {}
+                and cleaned_value != []
+            ):
+                result[key] = cleaned_value
+
+        return result
+    elif isinstance(data, list):
+        # Filter out None values and empty dictionaries/lists from the list
+        cleaned_list = [clean_json(item) for item in data if item is not None]
+        cleaned_list = [item for item in cleaned_list if item != {} and item != []]
+        return cleaned_list
+    else:
+        # Return the value as is if it's not a dictionary or list
+        return data
 
 
 # Authentication dependency
@@ -102,22 +134,28 @@ class SelroClient:
                     detail=f"Error communicating with Selro API: {str(e)}",
                 )
 
-        return {"orders": all_orders, "message": None, "order": None}
+        # Clean the response by removing null values and empty objects
+        cleaned_orders = clean_json(all_orders)
+        return {"orders": cleaned_orders, "message": None, "order": None}
 
 
 # Create Selro client
 selro_client = SelroClient(SELRO_KEY, SELRO_SECRET)
 
 
-# API endpoints
-@app.get("/api/orders/unshipped", response_model=SelroOrderResponse)
+# Custom response class to handle JSON cleanup
+@app.get("/api/orders/unshipped")
 async def get_unshipped_orders(api_key: str = Depends(verify_api_key)):
     """
-    Get all unshipped orders from Selro
+    Get all unshipped orders from Selro with cleaned output (no null values)
     """
     try:
         result = selro_client.fetch_all_orders(status="Unshipped")
-        return result
+
+        # Remove message and order from the response if they are None
+        cleaned_result = clean_json(result)
+
+        return JSONResponse(content=cleaned_result)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -125,10 +163,10 @@ async def get_unshipped_orders(api_key: str = Depends(verify_api_key)):
         )
 
 
-# @app.get("/api/orders/{status}", response_model=SelroOrderResponse)
+# @app.get("/api/orders/{status}")
 # async def get_orders_by_status(status: str, api_key: str = Depends(verify_api_key)):
 #     """
-#     Get all orders with a specific status from Selro
+#     Get all orders with a specific status from Selro with cleaned output (no null values)
 #     """
 #     valid_statuses = [
 #         "Shipped",
@@ -147,7 +185,11 @@ async def get_unshipped_orders(api_key: str = Depends(verify_api_key)):
 
 #     try:
 #         result = selro_client.fetch_all_orders(status=status)
-#         return result
+
+#         # Remove message and order from the response if they are None
+#         cleaned_result = clean_json(result)
+
+#         return JSONResponse(content=cleaned_result)
 #     except Exception as e:
 #         raise HTTPException(
 #             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
